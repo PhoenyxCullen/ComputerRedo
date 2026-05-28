@@ -5,70 +5,85 @@
 
 ## Current Drive Inventory
 
-| Device | Size | Model | Current Use |
-|--------|------|-------|-------------|
-| nvme1n1 | 1.9TB | TEAM TM8FP6002T | `/` (Btrfs, root + /var/log subvolumes) |
-| nvme0n1 | 465.8GB | WD Black SN770 500GB | `/ServerVMs` (ext4) |
-| sda | 10.9TB | Seagate ST12000NM0127 | `/home/allen` (Btrfs) |
-| sdb | 2.7TB | Seagate ST3000DM008 | unmounted (Btrfs) |
-| sdc | 931.5GB | WD WD10JPVX | `/home`, `/var`, swap, `/boot/efi` |
+| Device | Size | Type | Model | Current Use |
+|--------|------|------|-------|-------------|
+| nvme1n1 | 1.9TB | NVMe SSD | TEAM TM8FP6002T | `/` (Btrfs, root + /var/log subvolumes) |
+| nvme0n1 | 465.8GB | NVMe SSD | WD Black SN770 500GB | `/ServerVMs` (ext4) |
+| sda | 10.9TB | HDD | Seagate ST12000NM0127 | `/home/allen` (Btrfs) |
+| sdb | 2.7TB | HDD | Seagate ST3000DM008 | unmounted (Btrfs) |
+| sdc | 931.5GB | HDD 5400RPM | WD WD10JPVX (laptop) | `/home`, `/var`, swap, `/boot/efi` |
 
 ---
 
 ## Target Layout
 
-### nvme1n1 (1.9TB) — System Drive
-Wipe and set up with LUKS (optional) + LVM + Btrfs.
+### nvme1n1 (1.9TB TEAM) — System Drive
+Primary NVMe. LUKS (optional) + LVM + Btrfs. All high-I/O mounts live here.
 
 ```
 nvme1n1
 └─ [LUKS — optional]
    └─ LVM VG: vg_system
-      ├─ lv_swap    ~64GB     swap
-      ├─ lv_root   ~150GB     Btrfs
-      │    ├─ @root           /
-      │    └─ @snapshots      /.snapshots
-      ├─ lv_var     ~50GB     ext4 or Btrfs @var
-      ├─ lv_home   remaining  Btrfs
-      │    ├─ @home           /home
-      │    └─ @allen          /home/allen
-      └─ lv_efi      1GB      FAT32  /boot/efi
+      ├─ lv_efi      1GB      FAT32           /boot/efi
+      ├─ lv_swap    64GB      swap
+      ├─ lv_root   150GB      Btrfs
+      │    ├─ @root                            /
+      │    ├─ @var                             /var
+      │    └─ @snapshots                       /.snapshots
+      └─ lv_home   ~1.6TB     Btrfs
+           ├─ @home                            /home
+           └─ @allen                           /home/allen
 ```
 
-- `/home` and `/home/allen` are **separate Btrfs subvolumes on the same LV** (Option A)
-- Independent snapshots: can snapshot `@allen` without touching `@home`
-- Independent compression policies per subvolume
-- LVM handles resizing if lv_home needs to grow
+- `/var` as a Btrfs subvolume on lv_root — keeps package installs and logs on fast NVMe
+- `/home` and `/home/allen` are separate subvolumes on lv_home (Option A)
+- Independent snapshots per subvolume; LVM handles resizing
 
-### sda (10.9TB Seagate) — Steam Only
-Dedicated drive, own LVM VG, fully isolated from system.
+### nvme0n1 (465.8GB WD Black) — Server VMs
+Dedicated NVMe for VM storage — fast random I/O for virtual disks.
+
+```
+nvme0n1
+└─ LVM VG: vg_vms
+   └─ lv_vms   ~465GB    ext4    /ServerVMs
+```
+
+### sda (10.9TB Seagate) — Steam Library Only
+Own LVM VG, fully isolated. Sequential HDD I/O is fine for game loading.
 
 ```
 sda
 └─ LVM VG: vg_steam
-   └─ lv_steam   ~10.9TB    ext4   /home/allen/SteamLibrary
+   └─ lv_steam   ~10.9TB    ext4    /home/allen/SteamLibrary
 ```
 
-- Mounted at `/home/allen/SteamLibrary` — added as a Steam Library Folder via Steam → Settings → Storage
-- Steam client and config stay on the NVMe (`/home/allen/.local/share/Steam`); game files install to this drive
+- Add as Steam Library Folder via Steam → Settings → Storage
+- Steam client/config stays on NVMe (`/home/allen/.local/share/Steam`)
 - Per-game choice of which library to install to
-- Own VG means it can be added/removed without touching vg_system
-- ext4 recommended — no snapshot benefit for a games drive
 
-### nvme0n1 (465.8GB WD Black) — Server VMs
-Keep as dedicated VM storage.
+### sdb (2.7TB Seagate) — Bulk Data / Media
+Desktop HDD. Good for large files that don't need SSD speed.
 
 ```
-nvme0n1
-└─ LVM VG: vg_vms  (or keep as single partition)
-   └─ lv_vms   465GB    ext4 or Btrfs   /ServerVMs
+sdb
+└─ LVM VG: vg_data
+   └─ lv_data   ~2.7TB    Btrfs (zstd)    /home/allen/Data
 ```
 
-### sdb (2.7TB Seagate) — TBD
-Currently unmounted. Options:
-- Media/data storage
-- Additional Btrfs pool (could be added to vg_system as a second PV)
-- Secondary backup target
+- Downloads, media, documents, email archives, RPG PDFs, etc.
+- Btrfs with zstd compression — good ratio for documents/ebooks
+
+### sdc (931.5GB WD laptop 5400RPM) — Archive / Cold Storage
+Slowest drive. Suited for infrequently accessed files only.
+
+```
+sdc
+└─ LVM VG: vg_archive
+   └─ lv_archive   ~900GB    Btrfs (zstd)    /home/allen/Archive
+```
+
+- Long-term storage: old backups, ISOs, rarely touched files
+- Keep swap off this drive — too slow for swap I/O
 
 ---
 
