@@ -7,142 +7,156 @@
 
 | Device | Size | Type | Model | Current Use |
 |--------|------|------|-------|-------------|
-| nvme1n1 | 1.9TB | NVMe SSD | TEAM TM8FP6002T | `/` (Btrfs, root + /var/log subvolumes) |
+| nvme1n1 | 1.9TB | NVMe SSD | TEAM TM8FP6002T | `/` (Btrfs) |
 | nvme0n1 | 465.8GB | NVMe SSD | WD Black SN770 500GB | `/ServerVMs` (ext4) |
 | sda | 10.9TB | HDD | Seagate ST12000NM0127 | `/home/allen` (Btrfs) |
-| sdb | 2.7TB | HDD | Seagate ST3000DM008 | unmounted (Btrfs) |
-| sdc | 931.5GB | HDD 5400RPM | WD WD10JPVX (laptop) | `/home`, `/var`, swap, `/boot/efi` |
+| sdb | 2.7TB | HDD | Seagate ST3000DM008 | unmounted |
+| sdc | 931.5GB | HDD 5400RPM | WD WD10JPVX (2.5" laptop) | `/home`, `/var`, swap, `/boot/efi` |
+| WD Passport | 931.5GB | External USB | WD My Passport | Portable backup — in laptop bag, NOT part of redo |
+
+---
+
+## Two VG Design
+
+```
+vg_system  ← nvme1n1 + nvme0n1 + sdb + sdc  (all LUKS'd, ~6TB pool)
+vg_steam   ← sda only  (no LUKS, Steam library)
+```
+
+All system drives go into one pool. LVM flexibility means a large LV can span
+drives, and space can be carved out for VMs and Docker as needed post-install.
 
 ---
 
 ## Target Layout
 
-### nvme1n1 (1.9TB TEAM) — System Drive
-Primary NVMe. LUKS (optional) + LVM + Btrfs. All high-I/O mounts live here.
+### vg_system (~6TB pool)
+Four drives, each individually LUKS-encrypted, then joined as LVM PVs.
 
 ```
-nvme1n1
-└─ [LUKS — optional]
-   └─ LVM VG: vg_system
-      ├─ lv_efi      1GB      FAT32           /boot/efi
-      ├─ lv_swap    64GB      swap
-      ├─ lv_root   150GB      Btrfs
-      │    ├─ @root                            /
-      │    ├─ @var                             /var
-      │    └─ @snapshots                       /.snapshots
-      └─ lv_home   ~1.6TB     Btrfs
-           ├─ @home                            /home
-           └─ @allen                           /home/allen
+nvme1n1  → LUKS (passphrase at boot) → PV ─┐
+nvme0n1  → LUKS (keyfile after boot)  → PV ─┤
+sdb      → LUKS (keyfile after boot)  → PV ─┤→ vg_system
+sdc      → LUKS (keyfile after boot)  → PV ─┘
 ```
 
-- `/var` as a Btrfs subvolume on lv_root — keeps package installs and logs on fast NVMe
-- `/home` and `/home/allen` are separate subvolumes on lv_home (Option A)
-- Independent snapshots per subvolume; LVM handles resizing
+**LUKS unlock strategy:**
+- nvme1n1: unlocked first with passphrase at boot prompt
+- nvme0n1, sdb, sdc: unlocked automatically via keyfile stored on nvme1n1 after it's open
+- See `backup-plan/launch/backup-notes.md` for GPG keyfile setup (LUKS slot 1)
 
-### nvme0n1 (465.8GB WD Black) — Server VMs
-Dedicated NVMe for VM storage — fast random I/O for virtual disks.
+**Logical Volumes — allocated:**
 
+| LV | Size | FS | Mount | Notes |
+|----|------|----|-------|-------|
+| lv_efi | 1GB | FAT32 | /boot/efi | Unencrypted partition on nvme1n1 (before LUKS) |
+| lv_swap | 64GB | swap | [SWAP] | Matches RAM for full hibernate |
+| lv_root | 150GB | Btrfs | / and /var | Subvolumes: @root, @var, @snapshots |
+| lv_home | 1.5TB | Btrfs | /home, /home/allen | Subvolumes: @home, @allen |
+
+**Btrfs subvolume detail:**
 ```
-nvme0n1
-└─ LVM VG: vg_vms
-   └─ lv_vms   ~465GB    ext4    /ServerVMs
-```
+lv_root  → Btrfs
+  @root         /
+  @var          /var
+  @snapshots    /.snapshots
 
-### sda (10.9TB Seagate) — Steam Library Only
-Own LVM VG, fully isolated. Sequential HDD I/O is fine for game loading.
-
-```
-sda
-└─ LVM VG: vg_steam
-   └─ lv_steam   ~10.9TB    ext4    /home/allen/SteamLibrary
-```
-
-- Add as Steam Library Folder via Steam → Settings → Storage
-- Steam client/config stays on NVMe (`/home/allen/.local/share/Steam`)
-- Per-game choice of which library to install to
-
-### sdb (2.7TB Seagate) — Bulk Data / Media
-Desktop HDD. Good for large files that don't need SSD speed.
-
-```
-sdb
-└─ LVM VG: vg_data
-   └─ lv_data   ~2.7TB    Btrfs (zstd)    /home/allen/Data
+lv_home  → Btrfs
+  @home         /home
+  @allen        /home/allen
 ```
 
-- Downloads, media, documents, email archives, RPG PDFs, etc.
-- Btrfs with zstd compression — good ratio for documents/ebooks
+**Logical Volumes — reserved (create post-install as needed):**
 
-### sdc (931.5GB WD laptop 5400RPM) — Archive / Cold Storage
-Slowest drive. Suited for infrequently accessed files only.
+| LV | Suggested Size | Purpose |
+|----|----------------|---------|
+| lv_vms | 500GB–1TB | Server VMs / libvirt / QEMU |
+| lv_docker | 200GB | Docker storage (`/var/lib/docker`) |
+| lv_windows | 100–200GB | Windows VM virtual disk |
+| (expansion) | remaining ~3TB | Future use |
 
-```
-sdc
-└─ LVM VG: vg_archive
-   └─ lv_archive   ~900GB    Btrfs (zstd)    /home/allen/Archive
-```
-
-- Long-term storage: old backups, ISOs, rarely touched files
-- Keep swap off this drive — too slow for swap I/O
+Leave these unallocated until needed. `lvcreate` and `mkfs` on demand.
 
 ---
 
-## Desktop Environment
+### vg_steam (sda 10.9TB — no LUKS)
+Isolated VG. Steam game files only.
 
-**KDE Plasma (Wayland session)**
-- KWin compositor (Wayland) — required for Waydroid
-- Icon-Only Task Manager (already configured)
-- Polonium — i3-style tiling (installed, configure post-install)
-- pasystray — system tray audio control replacing KDE audio applet (installed)
-- gnome-keyring autostart — fixes Vivaldi session key issue on KDE
+```
+sda  → LVM VG: vg_steam
+       └─ lv_steam  ~10.9TB  ext4  /home/allen/SteamLibrary
+```
 
-**Audio:**
-- WirePlumber cork/ducking disabled via `~/.config/wireplumber/wireplumber.conf.d/50-disable-cork.conf`
+- Add as Steam Library Folder: Steam → Settings → Storage
+- Steam client/config stays on NVMe (`~/.local/share/Steam`)
+- No LUKS — game files are not sensitive, avoids encryption overhead on large sequential reads
 
-**Waydroid:**
-- Requires KDE Plasma Wayland session
-- Images already installed: `system.img` + `vendor.img` present
+---
+
+### WD Passport (external, NOT in redo)
+- 931.5GB, currently in laptop bag
+- LUKS2 + LVM + Btrfs already set up (see `backup-plan/`)
+- Purpose: portable backup, usable on Qubes laptop
+- Plug in and mount when doing backups; otherwise keep disconnected
 
 ---
 
 ## Partition Notes
 
-- **LUKS:** Optional — adds full-disk encryption with one passphrase at boot. Negligible performance impact on modern NVMe. Slot 0 = passphrase, Slot 1 = GPG keyfile (see backup-plan project for GPG unlock setup).
-- **Btrfs compression:** Use `zstd` on `@root`, `@home`, `@allen`. Skip on `@snapshots` (already compressed data). Skip or use `lzo` on `lv_steam` if using Btrfs there.
-- **Swap size:** 64GB matches RAM (64GB DDR5) — needed for full hibernate support.
-- **/boot/efi:** 1GB FAT32, on nvme1n1 (system drive). EFI/UEFI boot only.
+- **/boot/efi placement:** FAT32 EFI partition must be on an unencrypted partition on nvme1n1 — create this BEFORE setting up LUKS on the rest of the drive. Single small partition (1GB), rest of drive is one LUKS container → PV.
+- **Btrfs compression:** `zstd` on @root, @var, @home, @allen. Omit on @snapshots (already compressed). lv_steam uses ext4 — no compression needed for games.
+- **Swap size:** 64GB = RAM size, required for full hibernate (`systemctl hibernate`).
+- **LVM thin provisioning:** Not recommended here — stick with thick LVs for simplicity and predictable I/O.
+- **LUKS keyfile for secondary drives:** Store keyfile in `/etc/crypttab` workflow — nvme1n1 unlocks at boot, keyfile on its filesystem unlocks the rest automatically. See Arch Wiki: `dm-crypt/System configuration#crypttab`.
 
 ---
 
 ## Pre-Redo Checklist
 
 Before wiping anything:
-- [ ] Run backup script from `~/Projects/backup-plan/` — verify WD Passport backup is current
+- [ ] Plug in WD Passport, run backup script from `~/Projects/backup-plan/`
+- [ ] Verify backup is current and readable (`btrfs filesystem show`, spot-check files)
 - [ ] Check GPG key expiry (expires 2026-09-29 — extend if within 60 days)
-- [ ] Export Vivaldi session/bookmarks
-- [ ] Note pacman explicit packages: `pacman -Qe > ~/pacman-explicit.txt`
-- [ ] Note AUR packages: `yay -Qm > ~/aur-packages.txt`
-- [ ] Verify `/home/allen/` backup includes dotfiles (.zshrc, .gitconfig, .gnupg, .ssh)
+- [ ] Export Vivaldi bookmarks and session
+- [ ] `pacman -Qe > ~/pacman-explicit.txt`
+- [ ] `yay -Qm > ~/aur-packages.txt`
+- [ ] Verify dotfiles in backup: `.zshrc`, `.gitconfig`, `.gnupg/`, `.ssh/`, `.config/`
 
 ---
 
 ## Post-Install Checklist
 
-- [ ] Set up KDE Plasma Wayland as default session
-- [ ] Install pasystray, disable KDE audio applet in system tray
-- [ ] Install Polonium, configure tiling (deferred — do after settling in)
+**Storage:**
+- [ ] Verify all LUKS devices unlock correctly at boot
+- [ ] Confirm Btrfs subvolumes mounted at correct paths
+- [ ] Mount Steam library, add to Steam as library folder
+- [ ] Create lv_vms, lv_docker, lv_windows when ready (leave unallocated until then)
+
+**Desktop:**
+- [ ] Log into KDE Plasma Wayland session (not X11)
+- [ ] Disable KDE audio applet in system tray; confirm pasystray appears
+- [ ] Enable KWin desktop effects (wobbly windows, magic lamp, etc.)
+- [ ] Install and configure Polonium (deferred — settle in first)
 - [ ] Restore gnome-keyring autostart entry
 - [ ] Restore WirePlumber cork-disable config
+
+**Apps & Auth:**
 - [ ] Start Waydroid session, install Finelo
-- [ ] Restore GPG keys, configure git signing
+- [ ] Restore GPG keys (`gpg --import`)
+- [ ] Configure git signing (`user.signingkey`, `commit.gpgsign true`)
 - [ ] Load GPG subkeys onto YubiKeys
-- [ ] Set up pass (password-store)
-- [ ] Re-enable SSH via GPG auth subkey
+- [ ] Set up `pass` (password-store)
+- [ ] Enable SSH via GPG auth subkey
+
+**Pending projects:**
+- [ ] Fix Arch-like Qube on Qubes laptop (separate project)
 
 ---
 
 ## References
 
-- `~/Projects/backup-plan/launch/backup-notes.md` — backup targets, GPG/YubiKey setup, pre-redo backup plan
-- `~/Projects/StillOS-bios/` — StillOS USB for the old 2010 machine (separate project)
-- `~/Projects/LinuxMint-bios/` — Linux Mint USB for the old 2010 machine (separate project)
+- `~/Projects/backup-plan/launch/backup-notes.md` — backup targets, GPG/YubiKey/LUKS keyfile setup
+- `~/Projects/StillOS-bios/` — StillOS USB for old 2010 machine
+- `~/Projects/LinuxMint-bios/` — Linux Mint USB for old 2010 machine
+- Arch Wiki: [dm-crypt/Encrypting an entire system](https://wiki.archlinux.org/title/Dm-crypt/Encrypting_an_entire_system)
+- Arch Wiki: [dm-crypt/System configuration#crypttab](https://wiki.archlinux.org/title/Dm-crypt/System_configuration#crypttab)
