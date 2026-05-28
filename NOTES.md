@@ -72,10 +72,16 @@ lv_home  → Btrfs
 |----|----------------|---------|
 | lv_vms | 500GB–1TB | Server VMs / libvirt / QEMU |
 | lv_docker | 200GB | Docker storage (`/var/lib/docker`) |
-| lv_windows | 100–200GB | Windows VM virtual disk |
+| lv_windows | 120GB | Windows LTSC VM virtual disk |
 | (expansion) | remaining ~3TB | Future use |
 
 Leave these unallocated until needed. `lvcreate` and `mkfs` on demand.
+
+**Windows VM notes:**
+- Use **Windows LTSC** (Long-Term Servicing Channel) — no Cortana, no consumer AI, no Microsoft Store, minimal telemetry
+- Legal enterprise license; better app compatibility than community debloat builds (Atlas OS, Tiny11, ReviOS)
+- Same plan applies to Qubes laptop when that gets rebuilt
+- EVE Online runs via Proton on Linux — no Windows VM needed for that
 
 ---
 
