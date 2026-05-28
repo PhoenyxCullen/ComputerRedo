@@ -46,13 +46,14 @@ Dedicated drive, own LVM VG, fully isolated from system.
 ```
 sda
 └─ LVM VG: vg_steam
-   └─ lv_steam   ~10.9TB    ext4   /home/allen/.local/share/Steam
+   └─ lv_steam   ~10.9TB    ext4   /home/allen/SteamLibrary
 ```
 
-- Mounted at `/home/allen/.local/share/Steam` — Steam's default library path on Linux, no extra configuration needed
-- Must be mounted **after** `/home/allen` is set up (fstab entry depends on @allen subvolume being mounted first)
+- Mounted at `/home/allen/SteamLibrary` — added as a Steam Library Folder via Steam → Settings → Storage
+- Steam client and config stay on the NVMe (`/home/allen/.local/share/Steam`); game files install to this drive
+- Per-game choice of which library to install to
 - Own VG means it can be added/removed without touching vg_system
-- ext4 recommended — no snapshot benefit for a games drive, and ext4 avoids Btrfs overhead on large sequential writes
+- ext4 recommended — no snapshot benefit for a games drive
 
 ### nvme0n1 (465.8GB WD Black) — Server VMs
 Keep as dedicated VM storage.
